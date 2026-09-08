@@ -1,0 +1,22 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the wasm target
+        run: rustup target add wasm32-unknown-unknown
+      - name: Test the commitment scheme
+        run: cargo test --verbose
+      - name: Build the template
+        run: cargo build --release --target wasm32-unknown-unknown
+      - name: Lint
+        run: cargo clippy --release --target wasm32-unknown-unknown -- -D warnings
+      - name: Report the artefact size
+        run: ls -l target/wasm32-unknown-unknown/release/signal_vault.wasm
