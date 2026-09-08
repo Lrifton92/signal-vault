@@ -81,6 +81,19 @@ Built against the published crates `tari_template_lib 0.31.1` and `tari_template
 the build reproduces without a checkout of the Ootle repository. Blake2b-256 is computed in-template
 by the pure-Rust `blake2` crate rather than by an engine intrinsic, for the same reason.
 
+## Deployed
+
+Live on the **esmeralda** testnet:
+
+```
+template_06b9882e4d8e26551752ef0b1c5d300ec0b9a6db8a85705e34934f6dc858a61d
+```
+
+Published with `tari publish` through a local wallet daemon against the public indexer at
+`ootle-indexer-a.tari.com`. The on-chain ABI carries all fourteen functions — `publish`,
+`purchase`, `reveal`, `withdraw`, `withdraw_confidential` and the nine getters — under the
+template name `SignalVault`.
+
 ## Checked with the official tooling
 
 `tari lint` (from `tari-ootle-cli 0.26.0`) reports **0 errors, 0 warnings**, and
