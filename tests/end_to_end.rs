@@ -8,7 +8,7 @@
 //! Linux/macOS only: `tari_template_test_tooling` pulls the engine, which pulls a Cranelift JIT
 //! that refuses to compile on Windows (tari-project/tari-cli#205). CI runs it.
 
-use tari_template_lib_types::{constants::XTR, Amount, ComponentAddress, Hash32};
+use tari_template_lib_types::{constants::TARI_TOKEN, Amount, ComponentAddress, Hash32};
 use tari_template_test_tooling::{
     engine_types::virtual_substate::{VirtualSubstate, VirtualSubstateId},
     transaction::args,
@@ -18,7 +18,7 @@ use tari_template_test_tooling::{
 const PAYLOAD: &str = "BTCUSDT long 62000 sl 60500 tp 67000";
 const WRONG_PAYLOAD: &str = "BTCUSDT short 62000 sl 63500";
 const NONCE: &[u8] = b"demo-nonce-01";
-const PRICE: i64 = 1_000;
+const PRICE: u64 = 1_000;
 const REVEAL_AT_EPOCH: u64 = 5;
 
 fn set_epoch(test: &mut TemplateTest, epoch: u64) {
@@ -28,7 +28,7 @@ fn set_epoch(test: &mut TemplateTest, epoch: u64) {
 /// publish -> purchase -> (early reveal rejected) -> (wrong payload rejected) -> reveal -> closed
 #[test]
 fn a_sealed_signal_is_sold_then_opened_only_at_expiry_and_only_as_committed() {
-    let mut test = TemplateTest::new(["."]);
+    let mut test = TemplateTest::new_cwd(["."]);
     set_epoch(&mut test, 1);
 
     // The digest comes from the template's own `digest_of`, so the test commits to exactly what the
@@ -43,7 +43,7 @@ fn a_sealed_signal_is_sold_then_opened_only_at_expiry_and_only_as_committed() {
     let vault: ComponentAddress = test.call_function(
         "SignalVault",
         "publish",
-        args![commitment, REVEAL_AT_EPOCH, Amount(PRICE), XTR],
+        args![commitment, REVEAL_AT_EPOCH, Amount::from_u64(PRICE), TARI_TOKEN],
         vec![],
     );
 
@@ -58,7 +58,7 @@ fn a_sealed_signal_is_sold_then_opened_only_at_expiry_and_only_as_committed() {
     let (buyer, buyer_proof, buyer_key) = test.create_funded_account();
     let tx = test
         .transaction()
-        .call_method(buyer, "withdraw", args![XTR, Amount(PRICE)])
+        .call_method(buyer, "withdraw", args![TARI_TOKEN, Amount::from_u64(PRICE)])
         .put_last_instruction_output_on_workspace("payment")
         .call_method(vault, "purchase", args![Workspace("payment")])
         .put_last_instruction_output_on_workspace("out")
@@ -74,7 +74,7 @@ fn a_sealed_signal_is_sold_then_opened_only_at_expiry_and_only_as_committed() {
     );
     assert_eq!(
         test.call_method::<Amount>(vault, "earnings_balance", args![], vec![]),
-        Amount(PRICE),
+        Amount::from_u64(PRICE),
         "the payment must land in the vault"
     );
 
@@ -118,7 +118,7 @@ fn a_sealed_signal_is_sold_then_opened_only_at_expiry_and_only_as_committed() {
     let (late_buyer, late_proof, late_key) = test.create_funded_account();
     let too_late = test
         .transaction()
-        .call_method(late_buyer, "withdraw", args![XTR, Amount(PRICE)])
+        .call_method(late_buyer, "withdraw", args![TARI_TOKEN, Amount::from_u64(PRICE)])
         .put_last_instruction_output_on_workspace("payment")
         .call_method(vault, "purchase", args![Workspace("payment")])
         .build_and_seal(&late_key);
