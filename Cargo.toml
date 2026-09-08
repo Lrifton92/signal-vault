@@ -1,0 +1,26 @@
+[workspace]
+
+[package]
+name = "signal_vault"
+version = "0.1.0"
+edition = "2021"
+license = "BSD-3-Clause"
+description = "Sealed-bid trading signal vault for the Tari Ootle: sell a signal without revealing it, prove the track record after expiry."
+
+[dependencies]
+tari_template_lib = "0.31.1"
+tari_template_abi = "0.19.1"
+# Blake2b-256 in pure Rust. The commitment is hashed inside the template rather than by an engine
+# intrinsic, so the published crates alone are enough to reproduce this build.
+blake2 = { version = "0.10", default-features = false }
+minicbor = { version = "2.3", default-features = false, features = ["derive", "alloc"] }
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

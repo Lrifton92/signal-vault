@@ -1,0 +1,85 @@
+# Signal Vault
+
+**Sell a trading signal without revealing it, then prove your track record when it expires.**
+
+A Tari Ootle template implementing one primitive: *pay to unlock now, verify publicly later*.
+
+Built for the September 2026 Tari Developer Showcase.
+
+## The problem
+
+Signal sellers cannot publish their edge, because publishing it destroys it. So the market runs on
+screenshots and trust: Telegram groups, deleted losing calls, track records nobody can audit. The
+buyer has no way to check a seller's history, and the seller has no way to prove one without giving
+the signal away for free.
+
+## What the template does
+
+A provider seals a signal as `blake2b(domain ‖ payload ‖ nonce)` and publishes only that digest,
+together with a price and a reveal epoch. The payload never touches the chain while it is
+tradeable.
+
+1. **`publish(commitment, reveal_at_epoch, price, payment_resource)`** creates the component. The
+   payment resource decides the privacy model: pass a confidential resource and the amounts paid
+   stay hidden.
+2. **`purchase(payment) -> (badge, change)`** takes payment into the vault and mints a
+   non-fungible access badge carrying the commitment and the epoch of purchase. The provider
+   delivers the payload off-chain to badge holders. Sales close automatically at the reveal epoch.
+3. **`reveal(payload, nonce)`** is callable by *anyone* once the reveal epoch is reached. The
+   template re-hashes and rejects anything that does not open the commitment. A provider who goes
+   quiet after a losing call cannot bury it: any buyer holds the preimage and can open it.
+4. **`withdraw(amount)` / `withdraw_confidential(proof)`** pay the provider out.
+
+## Why the Ootle specifically
+
+- **Confidential resources** make the economics work. A provider selling signals will not publish
+  their own revenue, their buyer list, or their position sizing on a transparent chain. On the
+  Ootle the payments are confidential while the *commitment and its reveal* stay public — which is
+  exactly the right split: hide the money, publish the claim.
+- **Templates** make the escrow-and-reveal logic small enough to audit in one sitting. The whole
+  contract is under 250 lines.
+- **Epochs** give the reveal deadline a consensus-level clock instead of a trusted timestamp.
+
+## What it guarantees, and what it does not
+
+Guaranteed by the template:
+
+- A payload cannot be read on-chain before the reveal epoch, so a buyer cannot be front-run by
+  someone watching state.
+- A commitment can be opened exactly one way. Parts are length-prefixed before hashing, so
+  `("ab", "c")` and `("a", "bc")` are different digests and a provider cannot open one commitment
+  with two payloads and keep whichever aged better.
+- The digest was fixed before the outcome existed, so a revealed record is a real record.
+
+Not guaranteed, and deliberately out of scope:
+
+- **Off-chain delivery.** The template proves *what* was sealed, not that the provider actually
+  sent it to a buyer. Delivery is a separate problem; encrypting to the badge holder's key is the
+  natural next layer.
+- **Signal quality.** Verifiability is not profitability. The contract makes a bad provider
+  *legible*, not absent.
+- **Reveal liveness.** If the provider vanishes and no buyer keeps the preimage, the commitment
+  stays sealed forever. That is a deliberate trade for not storing the payload on-chain.
+
+## The same primitive elsewhere
+
+Anything shaped like "sell information now, prove it later": research calls, oracle
+pre-commitments, sealed-bid auctions, bug-bounty disclosure windows.
+
+## Build
+
+```
+rustup target add wasm32-unknown-unknown
+cargo test                                        # commitment scheme, native
+cargo build --release --target wasm32-unknown-unknown
+```
+
+Output: `target/wasm32-unknown-unknown/release/signal_vault.wasm`.
+
+Built against the published crates `tari_template_lib 0.31.1` and `tari_template_abi 0.19.1`, so
+the build reproduces without a checkout of the Ootle repository. Blake2b-256 is computed in-template
+by the pure-Rust `blake2` crate rather than by an engine intrinsic, for the same reason.
+
+## Licence
+
+BSD-3-Clause, matching the Tari codebase. See `LICENSE`.
