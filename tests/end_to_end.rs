@@ -20,6 +20,9 @@ const WRONG_PAYLOAD: &str = "BTCUSDT short 62000 sl 63500";
 const NONCE: &[u8] = b"demo-nonce-01";
 const PRICE: u64 = 1_000;
 const REVEAL_AT_EPOCH: u64 = 5;
+/// Paid on top of the price, so the change bucket is non-empty: depositing an empty bucket is
+/// rejected by the engine (`amount.is_positive()`), and a zero change would not prove change works.
+const OVERPAY: u64 = 250;
 
 fn set_epoch(test: &mut TemplateTest, epoch: u64) {
     test.set_virtual_substate(VirtualSubstateId::CurrentEpoch, VirtualSubstate::CurrentEpoch(epoch));
@@ -58,7 +61,7 @@ fn a_sealed_signal_is_sold_then_opened_only_at_expiry_and_only_as_committed() {
     let (buyer, buyer_proof, buyer_key) = test.create_funded_account();
     let tx = test
         .transaction()
-        .call_method(buyer, "withdraw", args![TARI_TOKEN, Amount::from_u64(PRICE)])
+        .call_method(buyer, "withdraw", args![TARI_TOKEN, Amount::from_u64(PRICE + OVERPAY)])
         .put_last_instruction_output_on_workspace("payment")
         .call_method(vault, "purchase", args![Workspace("payment")])
         .put_last_instruction_output_on_workspace("out")
