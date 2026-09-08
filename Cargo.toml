@@ -39,11 +39,9 @@ tari_ootle_template_build = "0.11"
 # wasm build itself does not use any of this.
 [dev-dependencies]
 tari_template_test_tooling = "0.40"
-tari_engine_types = "0.40"
 # Pin required: tari_engine 0.40.0 as published declares `wasmer = "^7.1.0"`, but its
 # `wasm/module.rs` calls `BaseTunables::for_target`, which no longer exists in wasmer 7.4.
 # Without this pin cargo resolves 7.4.0 and tari_engine fails to build (E0599). Upstream main
 # already narrowed the constraint to `~7.1.0`; this pin can go once that reaches crates.io.
 wasmer = "=7.1.0"
-tari_template_lib = "0.31.1"
 tari_template_lib_types = "0.31.0"
