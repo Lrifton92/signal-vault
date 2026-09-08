@@ -13,10 +13,24 @@ jobs:
       - name: Install the wasm target
         run: rustup target add wasm32-unknown-unknown
       - name: Test the commitment scheme
-        run: cargo test --verbose
+        run: cargo test --lib --verbose
       - name: Build the template
         run: cargo build --release --target wasm32-unknown-unknown
       - name: Lint
         run: cargo clippy --release --target wasm32-unknown-unknown -- -D warnings
       - name: Report the artefact size
         run: ls -l target/wasm32-unknown-unknown/release/signal_vault.wasm
+
+  end-to-end:
+    # The scenario the product claim rests on, played against a simulated Ootle ledger:
+    # a signal is sold sealed, cannot be opened early, cannot be opened as a different call,
+    # and stops selling once it is public. Linux only — the engine pulls a Cranelift JIT that
+    # refuses to compile on Windows.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the wasm target
+        run: rustup target add wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Play the full life of one signal
+        run: cargo test --test end_to_end -- --nocapture
