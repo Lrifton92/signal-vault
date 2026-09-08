@@ -82,7 +82,7 @@ mod signal_vault {
         /// The opened payload. `None` until `reveal` succeeds.
         payload: Option<String>,
         /// The nonce that opens the commitment. Published with the payload so anyone can re-hash.
-        nonce: Option<Vec<u8>>,
+        nonce: Option<Bytes>,
         /// Epoch at which the reveal actually happened.
         revealed_at_epoch: Option<u64>,
         /// Number of badges sold. Public on purpose: demand is the provider's reputation.
@@ -169,7 +169,7 @@ mod signal_vault {
 
         /// Opens the commitment. Callable by anyone once the reveal epoch is reached — a provider
         /// who goes quiet cannot bury a losing call, as long as one buyer holds the preimage.
-        pub fn reveal(&mut self, payload: String, nonce: Vec<u8>) {
+        pub fn reveal(&mut self, payload: String, nonce: Bytes) {
             let now = Consensus::current_epoch();
             assert!(
                 now >= self.reveal_at_epoch,
@@ -231,7 +231,7 @@ mod signal_vault {
         }
 
         /// The nonce that opens the commitment, published alongside the payload.
-        pub fn nonce(&self) -> Option<Vec<u8>> {
+        pub fn nonce(&self) -> Option<Bytes> {
             self.nonce.clone()
         }
 
@@ -248,9 +248,66 @@ mod signal_vault {
 
         /// Re-derives the commitment. Exposed so a buyer can check, off-chain and before paying,
         /// that the payload they were promised is the one that was sealed.
-        pub fn digest_of(payload: String, nonce: Vec<u8>) -> Hash32 {
+        pub fn digest_of(payload: String, nonce: Bytes) -> Hash32 {
             commitment_of(&payload, &nonce)
         }
 
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! The commitment scheme is the only part of the vault that has to be right before anything else
+    //! matters: if two different payloads can open the same commitment, the whole "you cannot fake a
+    //! track record" claim collapses. These run natively, no engine needed.
+
+    use super::commitment_of;
+
+    #[test]
+    fn same_input_gives_same_commitment() {
+        let a = commitment_of("BTCUSDT long 62000 sl 60500", b"nonce-1");
+        let b = commitment_of("BTCUSDT long 62000 sl 60500", b"nonce-1");
+        assert_eq!(a, b, "the digest must be deterministic");
+    }
+
+    #[test]
+    fn a_different_payload_gives_a_different_commitment() {
+        let a = commitment_of("BTCUSDT long 62000 sl 60500", b"nonce-1");
+        let b = commitment_of("BTCUSDT short 62000 sl 63500", b"nonce-1");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn a_different_nonce_gives_a_different_commitment() {
+        let a = commitment_of("BTCUSDT long 62000 sl 60500", b"nonce-1");
+        let b = commitment_of("BTCUSDT long 62000 sl 60500", b"nonce-2");
+        assert_ne!(
+            a, b,
+            "the nonce is what stops a guessable payload from being brute-forced before reveal"
+        );
+    }
+
+    #[test]
+    fn shifting_bytes_between_payload_and_nonce_does_not_collide() {
+        // The attack the length prefix exists to stop: without it, hashing payload||nonce would let a
+        // provider open one commitment two ways and claim whichever call turned out right.
+        let a = commitment_of("ab", b"c");
+        let b = commitment_of("a", b"bc");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn empty_payload_and_empty_nonce_are_distinguished() {
+        let a = commitment_of("", b"");
+        let b = commitment_of("", b"\x00");
+        let c = commitment_of("\u{0}", b"");
+        assert_ne!(a, b);
+        assert_ne!(a, c);
+        assert_ne!(b, c);
+    }
+
+    #[test]
+    fn commitment_is_32_bytes() {
+        assert_eq!(commitment_of("x", b"y").as_slice().len(), 32);
     }
 }

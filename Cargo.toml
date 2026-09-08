@@ -7,6 +7,12 @@ edition = "2021"
 license = "BSD-3-Clause"
 description = "Sealed-bid trading signal vault for the Tari Ootle: sell a signal without revealing it, prove the track record after expiry."
 
+[package.metadata.tari-template]
+tags = ["trading", "signals", "privacy", "commitment", "marketplace"]
+category = "defi"
+documentation = "https://github.com/Lrifton92/signal-vault#readme"
+homepage = "https://github.com/Lrifton92/signal-vault"
+
 [dependencies]
 tari_template_lib = "0.31.1"
 tari_template_abi = "0.19.1"
@@ -16,7 +22,7 @@ blake2 = { version = "0.10", default-features = false }
 minicbor = { version = "2.3", default-features = false, features = ["derive", "alloc"] }
 
 [lib]
-crate-type = ["cdylib", "rlib"]
+crate-type = ["cdylib"]
 
 [profile.release]
 opt-level = "s"
@@ -24,3 +30,6 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+
+[build-dependencies]
+tari_ootle_template_build = "0.11"
