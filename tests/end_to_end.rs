@@ -8,7 +8,7 @@
 //! Linux/macOS only: `tari_template_test_tooling` pulls the engine, which pulls a Cranelift JIT
 //! that refuses to compile on Windows (tari-project/tari-cli#205). CI runs it.
 
-use tari_template_lib_types::{constants::TARI_TOKEN, Amount, ComponentAddress, Hash32};
+use tari_template_lib_types::{bytes::Bytes, constants::TARI_TOKEN, Amount, ComponentAddress, Hash32};
 use tari_template_test_tooling::{
     engine_types::virtual_substate::{VirtualSubstate, VirtualSubstateId},
     transaction::args,
@@ -36,7 +36,7 @@ fn a_sealed_signal_is_sold_then_opened_only_at_expiry_and_only_as_committed() {
     let commitment: Hash32 = test.call_function(
         "SignalVault",
         "digest_of",
-        args![PAYLOAD.to_string(), NONCE.to_vec()],
+        args![PAYLOAD.to_string(), Bytes::from_vec(NONCE.to_vec())],
         vec![],
     );
 
@@ -82,7 +82,7 @@ fn a_sealed_signal_is_sold_then_opened_only_at_expiry_and_only_as_committed() {
     let key = test.secret_key().clone();
     let too_early = test
         .transaction()
-        .call_method(vault, "reveal", args![PAYLOAD.to_string(), NONCE.to_vec()])
+        .call_method(vault, "reveal", args![PAYLOAD.to_string(), Bytes::from_vec(NONCE.to_vec())])
         .build_and_seal(&key);
     test.execute_expect_failure(too_early, vec![]);
 
@@ -92,7 +92,7 @@ fn a_sealed_signal_is_sold_then_opened_only_at_expiry_and_only_as_committed() {
     // The whole track-record claim rests on this failing.
     let wrong = test
         .transaction()
-        .call_method(vault, "reveal", args![WRONG_PAYLOAD.to_string(), NONCE.to_vec()])
+        .call_method(vault, "reveal", args![WRONG_PAYLOAD.to_string(), Bytes::from_vec(NONCE.to_vec())])
         .build_and_seal(&key);
     test.execute_expect_failure(wrong, vec![]);
 
@@ -102,7 +102,7 @@ fn a_sealed_signal_is_sold_then_opened_only_at_expiry_and_only_as_committed() {
     );
 
     // --- the real reveal ----------------------------------------------------------------------
-    test.call_method::<()>(vault, "reveal", args![PAYLOAD.to_string(), NONCE.to_vec()], vec![]);
+    test.call_method::<()>(vault, "reveal", args![PAYLOAD.to_string(), Bytes::from_vec(NONCE.to_vec())], vec![]);
 
     assert_eq!(
         test.call_method::<Option<String>>(vault, "payload", args![], vec![]).as_deref(),
