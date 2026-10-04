@@ -103,7 +103,8 @@ fn the_publisher_cannot_swap_the_vault_code() {
         .transaction()
         .update_component_template(vault, other)
         .build_and_seal(test.secret_key());
-    expect_reject(&mut test, tx, vec![test.owner_proof()], "denied");
+    let owner_proof = test.owner_proof();
+    expect_reject(&mut test, tx, vec![owner_proof], "denied");
 }
 
 #[test]
