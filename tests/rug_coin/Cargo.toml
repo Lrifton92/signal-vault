@@ -1,0 +1,15 @@
+# Test-only template: a fungible coin whose issuer can recall it out of any vault.
+# Its own workspace root so cargo does not treat it as a member of the signal_vault package.
+[workspace]
+
+[package]
+name = "rug_coin"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+tari_template_lib = "0.31.1"
+
+[lib]
+crate-type = ["cdylib"]

@@ -33,4 +33,4 @@ jobs:
         run: rustup target add wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - name: Play the full life of one signal
-        run: cargo test --no-fail-fast --test end_to_end --test access_and_payment --test audit_october --test confidential_payment -- --nocapture
+        run: cargo test --no-fail-fast --test end_to_end --test access_and_payment --test audit_october --test confidential_payment --test audit_second_wave -- --nocapture
