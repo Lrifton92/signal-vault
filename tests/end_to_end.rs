@@ -17,7 +17,7 @@ use tari_template_test_tooling::{
 
 const PAYLOAD: &str = "BTCUSDT long 62000 sl 60500 tp 67000";
 const WRONG_PAYLOAD: &str = "BTCUSDT short 62000 sl 63500";
-const NONCE: &[u8] = b"demo-nonce-01";
+const NONCE: &[u8] = b"demo-nonce-0123456789abcdefghijk";
 const PRICE: u64 = 1_000;
 const REVEAL_AT_EPOCH: u64 = 5;
 /// Paid on top of the price, so the change bucket is non-empty: depositing an empty bucket is
@@ -124,8 +124,13 @@ fn a_sealed_signal_is_sold_then_opened_only_at_expiry_and_only_as_committed() {
         .call_method(late_buyer, "withdraw", args![TARI_TOKEN, Amount::from_u64(PRICE)])
         .put_last_instruction_output_on_workspace("payment")
         .call_method(vault, "purchase", args![Workspace("payment")])
+        .put_last_instruction_output_on_workspace("out")
+        .call_method(late_buyer, "deposit", args![Workspace("out.0")])
         .build_and_seal(&late_key);
-    test.execute_expect_failure(too_late, vec![late_proof]);
+    // Without the deposit the transaction would fail on the dangling badge even if `purchase`
+    // accepted, so the reason is checked.
+    let reason = format!("{:?}", test.execute_expect_failure(too_late, vec![late_proof]));
+    assert!(reason.contains("already revealed"), "rejected for the wrong reason: {reason}");
 
     assert_eq!(
         test.call_method::<u64>(vault, "sold", args![], vec![]),
