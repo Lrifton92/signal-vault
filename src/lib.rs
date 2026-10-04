@@ -5,7 +5,7 @@
 //!
 //! A sealed-bid marketplace primitive for the Tari Ootle: **pay to unlock, verify after expiry**.
 //!
-//! A signal provider publishes only `blake2b(payload || nonce)` — the signal itself never touches
+//! A signal provider publishes only `commitment_of(payload, nonce)` — the signal itself never touches
 //! the chain while it is tradeable. Buyers pay into a vault and receive an access badge; the
 //! provider delivers the payload off-chain to badge holders. Once the reveal epoch is reached,
 //! anybody may open the commitment, and from then on the payload is public and permanently bound
@@ -15,9 +15,15 @@
 //!
 //! * a buyer cannot be front-run, because the payload is not readable on-chain before expiry;
 //! * a provider cannot fabricate a track record afterwards, because the commitment was fixed
-//!   before the outcome was known and the hash is checked on reveal;
-//! * when the payment resource is a confidential one, the amounts paid and the balance held stay
-//!   hidden, so a provider does not publish their own revenue in order to sell.
+//!   before the outcome was known, the hash is checked on reveal, and the component has no owner
+//!   who could swap its code;
+//! * a provider is only paid for a signal they open: proceeds stay locked until the reveal, and if
+//!   the reveal window closes without one, every badge holder can burn their badge for a refund.
+//!
+//! What stays private: the payload until expiry, and — when the payment resource is confidential —
+//! the buyer's own balance (they reveal exactly the price from a confidential withdraw) and where
+//! the provider sends the proceeds. What does not: the price and the number of badges sold are
+//! public, so gross revenue is `price × sold`.
 //!
 //! The same primitive fits any "sell information now, prove it later" market: research calls,
 //! oracle pre-commitments, sealed-bid auctions.
@@ -32,6 +38,21 @@ use tari_template_lib::types::Hash32;
 const DOMAIN: &[u8] = b"tari.ootle.signal_vault.commitment.v1";
 
 type Blake2b256 = Blake2b<U32>;
+
+/// Epochs after `reveal_at_epoch` during which the signal can still be opened. Once they have
+/// passed without a reveal, the vault switches to refunds, and the two never overlap.
+pub const REVEAL_WINDOW_EPOCHS: u64 = 10;
+
+/// Furthest `reveal_at_epoch` a vault may be published with, counted from the current epoch. Without
+/// a bound, a vault sealed for `u64::MAX` would never reach judgement nor refunds.
+pub const MAX_REVEAL_HORIZON_EPOCHS: u64 = 10_000;
+
+/// A short nonce lets anyone brute-force a guessable payload ("long" / "short") from the public
+/// commitment before expiry. The chain cannot check entropy, but it can refuse to open a commitment
+/// that was sealed with a nonce too short to have had any: use 32 bytes from a CSPRNG.
+pub const MIN_NONCE_LEN: usize = 16;
+pub const MAX_NONCE_LEN: usize = 64;
+pub const MAX_PAYLOAD_LEN: usize = 1024;
 
 /// The commitment a provider seals, and the value `reveal` checks against.
 ///
@@ -59,7 +80,8 @@ pub struct BadgeData {
     /// The commitment this badge grants access to.
     #[n(0)]
     pub commitment: [u8; 32],
-    /// Epoch in which the badge was bought. Lets a provider prove delivery order.
+    /// Epoch in which the badge was bought. Proves when it was paid for, not when the payload was
+    /// delivered.
     #[n(1)]
     pub bought_at_epoch: u64,
 }
@@ -69,7 +91,7 @@ mod signal_vault {
     use super::*;
 
     pub struct SignalVault {
-        /// `blake2b(payload || nonce)`. Fixed at publish time and never mutated.
+        /// `commitment_of(payload, nonce)`. Fixed at publish time and never mutated.
         commitment: Hash32,
         /// First epoch at which `reveal` is allowed.
         reveal_at_epoch: u64,
@@ -85,14 +107,19 @@ mod signal_vault {
         nonce: Option<Bytes>,
         /// Epoch at which the reveal actually happened.
         revealed_at_epoch: Option<u64>,
-        /// Number of badges sold. Public on purpose: demand is the provider's reputation.
+        /// Number of badges sold. The provider can buy their own, so this is not a reputation metric.
         sold: u64,
+        /// Badges burned for a refund.
+        refunded: u64,
+        /// Key that signed `publish`. The only key allowed to withdraw, since the component has no
+        /// owner.
+        publisher: RistrettoPublicKeyBytes,
     }
 
     impl SignalVault {
         /// Seals a signal.
         ///
-        /// `commitment` must be `blake2b(payload || nonce)` — the template checks that on reveal,
+        /// `commitment` must be `commitment_of(payload, nonce)` — the template checks that on reveal,
         /// so a provider who commits to nothing simply can never reveal.
         ///
         /// `payment_resource` chooses the privacy model: pass a confidential resource and the
@@ -110,19 +137,45 @@ mod signal_vault {
                 reveal_at_epoch,
                 now
             );
+            assert!(
+                reveal_at_epoch - now <= MAX_REVEAL_HORIZON_EPOCHS,
+                "reveal_at_epoch {} is more than {} epochs away",
+                reveal_at_epoch,
+                MAX_REVEAL_HORIZON_EPOCHS
+            );
             assert!(price.is_positive(), "price must be positive");
+            assert!(
+                matches!(
+                    ResourceManager::get(payment_resource).resource_type(),
+                    ResourceType::Fungible | ResourceType::Confidential
+                ),
+                "the payment resource must be fungible or confidential"
+            );
 
             // The vault's address is reserved up front so the badge resource can name it: only code
-            // running inside this component (that is, `purchase`) may mint a badge.
+            // running inside this component (`purchase` and `refund`) may mint or burn a badge.
             let allocation = CallerContext::allocate_component_address(None);
             let vault_address = allocation.get_address();
+            let publisher = CallerContext::transaction_signer_public_key();
 
+            // No owner, and every rule locked: an owner bypasses mint rules, so the publisher could
+            // otherwise mint free badges or freeze the buyers' ones. Badge data is immutable.
             let badges = ResourceBuilder::non_fungible()
+                .with_owner_rule(OwnerRule::None)
                 .with_token_symbol("SIGV")
                 .add_metadata("name", "Signal Vault access badge")
-                .mintable(rule!(component(vault_address)), OWNER)
-                .burnable(rule!(allow_all), OWNER)
+                .mintable(rule!(component(vault_address)), LOCKED)
+                .burnable(rule!(component(vault_address)), LOCKED)
+                .update_non_fungible_data(rule!(deny_all), LOCKED)
                 .build();
+
+            emit_event("signal_published", metadata! {
+                "vault" => vault_address.to_string(),
+                "publisher" => publisher.to_string(),
+                "commitment" => commitment.to_string(),
+                "reveal_at_epoch" => reveal_at_epoch.to_string(),
+                "price" => price.to_string(),
+            });
 
             Component::new(Self {
                 commitment,
@@ -134,14 +187,20 @@ mod signal_vault {
                 nonce: None,
                 revealed_at_epoch: None,
                 sold: 0,
+                refunded: 0,
+                publisher,
             })
             .with_address_allocation(allocation)
-            // Everything is public except `withdraw` and `withdraw_confidential`, which fall through to
-            // the default and are therefore callable only by the component owner (the publisher).
+            // No owner: an owner passes every method rule and may replace the component's template,
+            // which would let the publisher rewrite the commitment after the fact.
+            .with_owner_rule(OwnerRule::None)
             .with_access_rules(
                 ComponentAccessRules::new()
                     .method("purchase", rule!(allow_all))
                     .method("reveal", rule!(allow_all))
+                    .method("refund", rule!(allow_all))
+                    .method("withdraw", rule!(public_key(publisher)))
+                    .method("withdraw_confidential", rule!(public_key(publisher)))
                     .method("commitment", rule!(allow_all))
                     .method("reveal_at_epoch", rule!(allow_all))
                     .method("price", rule!(allow_all))
@@ -150,6 +209,7 @@ mod signal_vault {
                     .method("nonce", rule!(allow_all))
                     .method("revealed_at_epoch", rule!(allow_all))
                     .method("earnings_balance", rule!(allow_all))
+                    .method("refunded", rule!(allow_all))
                     .default(rule!(deny_all)),
             )
             .create()
@@ -170,6 +230,10 @@ mod signal_vault {
                 payment.resource_address() == self.earnings.resource_address(),
                 "wrong payment resource"
             );
+            // The template only sees the revealed part of a confidential bucket. Hidden commitments
+            // would be deposited uncounted and stuck: the provider cannot spend them without the
+            // buyer's masks. Pay the price as a revealed amount.
+            payment.assert_contains_no_confidential_funds();
 
             let paid = payment.amount();
             assert!(paid >= self.price, "paid {} but the price is {}", paid, self.price);
@@ -179,18 +243,19 @@ mod signal_vault {
 
             let badge = self.badges.mint_non_fungible(
                 NonFungibleId::random(),
-                &Metadata::new(),
                 &BadgeData {
                     commitment: self.commitment.into_array(),
                     bought_at_epoch: Consensus::current_epoch(),
                 },
+                &(),
             );
             self.sold += 1;
             (badge, change)
         }
 
-        /// Opens the commitment. Callable by anyone once the reveal epoch is reached — a provider
-        /// who goes quiet cannot bury a losing call, as long as one buyer holds the preimage.
+        /// Opens the commitment. Callable by anyone during the reveal window — a provider who goes
+        /// quiet cannot bury a losing call if a buyer was given the payload and the nonce. After
+        /// the window, an unopened signal counts as a loss and its buyers are refunded.
         pub fn reveal(&mut self, payload: String, nonce: Bytes) {
             let now = Consensus::current_epoch();
             assert!(
@@ -199,7 +264,19 @@ mod signal_vault {
                 self.reveal_at_epoch,
                 now
             );
+            assert!(
+                now < self.refund_from_epoch(),
+                "reveal window closed at epoch {}; the vault is refunding",
+                self.refund_from_epoch()
+            );
             assert!(self.payload.is_none(), "already revealed");
+            assert!(payload.len() <= MAX_PAYLOAD_LEN, "payload longer than {} bytes", MAX_PAYLOAD_LEN);
+            assert!(
+                (MIN_NONCE_LEN..=MAX_NONCE_LEN).contains(&nonce.len()),
+                "nonce must be {} to {} bytes",
+                MIN_NONCE_LEN,
+                MAX_NONCE_LEN
+            );
             assert!(
                 commitment_of(&payload, &nonce) == self.commitment,
                 "payload and nonce do not open this commitment"
@@ -216,15 +293,51 @@ mod signal_vault {
             self.revealed_at_epoch = Some(now);
         }
 
-        /// Withdraws proceeds. Owner only: no access rule allows it, so only the component owner
-        /// (the publisher) passes the engine's check.
+        /// Refunds unopened signals: burns the badges and returns their price. Allowed once the
+        /// reveal window has closed without a reveal.
+        pub fn refund(&mut self, badges: Bucket) -> Bucket {
+            assert!(self.payload.is_none(), "signal revealed; nothing to refund");
+            let now = Consensus::current_epoch();
+            assert!(
+                now >= self.refund_from_epoch(),
+                "refunds open at epoch {} (current {})",
+                self.refund_from_epoch(),
+                now
+            );
+            assert!(
+                badges.resource_address() == self.badges.resource_address(),
+                "not a badge of this vault"
+            );
+            let count = badges.amount();
+            assert!(count.is_positive(), "no badge to refund");
+            let due = self.price.checked_mul(count).expect("refund amount overflows");
+
+            badges.burn();
+            self.refunded += count.to_u64_checked().expect("badge count fits in u64");
+            self.earnings.withdraw(due)
+        }
+
+        /// Withdraws proceeds. Publisher only, and only once the signal is open: until then the
+        /// money backs the refunds.
         pub fn withdraw(&mut self, amount: Amount) -> Bucket {
+            assert!(self.payload.is_some(), "proceeds are locked until the signal is revealed");
             self.earnings.withdraw(amount)
         }
 
-        /// Withdraws confidential proceeds without disclosing the amount.
+        /// Withdraws proceeds into a confidential output. The amount leaving the vault is still
+        /// visible in the proof; only where it goes is hidden.
         pub fn withdraw_confidential(&mut self, proof: ConfidentialWithdrawProof) -> Bucket {
+            assert!(self.payload.is_some(), "proceeds are locked until the signal is revealed");
             self.earnings.withdraw_confidential(proof)
+        }
+
+        /// Badges burned for a refund.
+        pub fn refunded(&self) -> u64 {
+            self.refunded
+        }
+
+        fn refund_from_epoch(&self) -> u64 {
+            self.reveal_at_epoch.saturating_add(REVEAL_WINDOW_EPOCHS)
         }
 
         /// The sealed commitment.
@@ -262,8 +375,8 @@ mod signal_vault {
             self.revealed_at_epoch
         }
 
-        /// Revealed balance of the earnings vault. Zero for a confidential resource whose value
-        /// has not been revealed — that is the point.
+        /// Balance of the earnings vault. Purchases only accept revealed funds, so this is always
+        /// `price × (sold − refunded)` minus withdrawals, confidential resource or not.
         pub fn earnings_balance(&self) -> Amount {
             self.earnings.balance()
         }

@@ -181,3 +181,73 @@ fn a_commitment_sealed_with_a_short_nonce_cannot_be_opened() {
         .build_and_seal(test.secret_key());
     expect_reject(&mut test, tx, vec![], "nonce must be");
 }
+
+/// Epoch from which an unopened vault refunds. Mirrors `REVEAL_WINDOW_EPOCHS` in the template.
+const REFUND_FROM_EPOCH: u64 = REVEAL_AT_EPOCH + 10;
+
+/// Burns every badge `buyer` holds for a refund and deposits the money back.
+fn refund_tx(test: &mut TemplateTest, vault: ComponentAddress, badges: ResourceAddress, buyer: ComponentAddress, key: &tari_template_test_tooling::crypto::RistrettoSecretKey) -> Transaction {
+    test.transaction()
+        .call_method(buyer, "withdraw", args![badges, Amount::from_u64(1)])
+        .put_last_instruction_output_on_workspace("badge")
+        .call_method(vault, "refund", args![Workspace("badge")])
+        .put_last_instruction_output_on_workspace("money")
+        .call_method(buyer, "deposit", args![Workspace("money")])
+        .build_and_seal(key)
+}
+
+#[test]
+fn an_unopened_signal_refunds_its_buyers() {
+    let (mut test, vault, badges) = setup();
+    let (buyer, proof, key) = test.create_funded_account();
+    let tx = test
+        .transaction()
+        .call_method(buyer, "withdraw", args![TARI_TOKEN, Amount::from_u64(PRICE)])
+        .put_last_instruction_output_on_workspace("payment")
+        .call_method(vault, "purchase", args![Workspace("payment")])
+        .put_last_instruction_output_on_workspace("out")
+        .call_method(buyer, "deposit", args![Workspace("out.0")])
+        .build_and_seal(&key);
+    test.execute_expect_success(tx, vec![proof.clone()]);
+
+    // Not before the reveal window has closed.
+    set_epoch(&mut test, REVEAL_AT_EPOCH);
+    let early = refund_tx(&mut test, vault, badges, buyer, &key);
+    expect_reject(&mut test, early, vec![proof.clone()], "refunds open at epoch");
+
+    set_epoch(&mut test, REFUND_FROM_EPOCH);
+    let tx = refund_tx(&mut test, vault, badges, buyer, &key);
+    test.execute_expect_success(tx, vec![proof]);
+
+    assert_eq!(test.call_method::<u64>(vault, "refunded", args![], vec![]), 1);
+    assert_eq!(test.call_method::<Amount>(vault, "earnings_balance", args![], vec![]), Amount::zero());
+
+    // And the signal can no longer be opened: reveal and refund never overlap.
+    let tx = test
+        .transaction()
+        .call_method(vault, "reveal", args![PAYLOAD.to_string(), Bytes::from_vec(NONCE.to_vec())])
+        .build_and_seal(test.secret_key());
+    expect_reject(&mut test, tx, vec![], "reveal window closed");
+}
+
+#[test]
+fn an_opened_signal_does_not_refund() {
+    let (mut test, vault, badges) = setup();
+    let (buyer, proof, key) = test.create_funded_account();
+    let tx = test
+        .transaction()
+        .call_method(buyer, "withdraw", args![TARI_TOKEN, Amount::from_u64(PRICE)])
+        .put_last_instruction_output_on_workspace("payment")
+        .call_method(vault, "purchase", args![Workspace("payment")])
+        .put_last_instruction_output_on_workspace("out")
+        .call_method(buyer, "deposit", args![Workspace("out.0")])
+        .build_and_seal(&key);
+    test.execute_expect_success(tx, vec![proof.clone()]);
+
+    set_epoch(&mut test, REVEAL_AT_EPOCH);
+    test.call_method::<()>(vault, "reveal", args![PAYLOAD.to_string(), Bytes::from_vec(NONCE.to_vec())], vec![]);
+
+    set_epoch(&mut test, REFUND_FROM_EPOCH);
+    let tx = refund_tx(&mut test, vault, badges, buyer, &key);
+    expect_reject(&mut test, tx, vec![proof], "nothing to refund");
+}

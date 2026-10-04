@@ -20,26 +20,31 @@ together with a price and a reveal epoch. The payload never touches the chain wh
 tradeable.
 
 1. **`publish(commitment, reveal_at_epoch, price, payment_resource)`** creates the component. The
-   payment resource decides the privacy model: pass a confidential resource and the amounts paid
-   stay hidden.
+   component has no owner, so nobody, the publisher included, can change its code or its rules
+   afterwards. `reveal_at_epoch` must be at most 10,000 epochs away, and the publication is
+   emitted as a `signal_published` event, so a provider's unopened vaults stay visible.
 2. **`purchase(payment) -> (badge, change)`** takes payment into the vault and mints a
    non-fungible access badge carrying the commitment and the epoch of purchase (`change` is `None`
-   on an exact payment). Only the vault itself can mint badges. The provider
+   on an exact payment). Only the vault itself can mint badges, and badge data is immutable. Payment
+   must be revealed funds: hidden confidential commitments are refused rather than lost. The provider
    delivers the payload off-chain to badge holders. Sales close automatically at the reveal epoch.
-3. **`reveal(payload, nonce)`** is callable by *anyone* once the reveal epoch is reached. The
-   template re-hashes and rejects anything that does not open the commitment. A provider who goes
-   quiet after a losing call cannot bury it: any buyer holds the preimage and can open it.
-4. **`withdraw(amount)` / `withdraw_confidential(proof)`** pay the provider out. Owner only: every
-   other method is public, these two are not.
+3. **`reveal(payload, nonce)`** is callable by *anyone* during the reveal window (10 epochs from
+   the reveal epoch). The template re-hashes, rejects anything that does not open the commitment,
+   and requires a 16 to 64-byte nonce (use 32 random bytes: a short one lets anyone brute-force a
+   guessable payload from the public digest).
+4. **`refund(badges)`**: if the window closes without a reveal, any badge holder burns their badges
+   and gets the price back. An unopened signal is a refunded loss, never a quiet one.
+5. **`withdraw(amount)` / `withdraw_confidential(proof)`** pay the provider out, only with the
+   publishing key and only after the reveal: until then the money backs the refunds.
 
 ## Why the Ootle specifically
 
-- **Confidential resources** make the economics work. A provider selling signals will not publish
-  their own revenue, their buyer list, or their position sizing on a transparent chain. On the
-  Ootle the payments are confidential while the *commitment and its reveal* stay public — which is
-  exactly the right split: hide the money, publish the claim.
+- **Confidential resources** keep the buyer's wallet private: they pay the exact price out of a
+  confidential withdraw, so their balance never shows. The price and the number of badges sold are
+  public, so gross revenue is too (`price × sold`); what the provider does with it can go back into
+  a confidential output.
 - **Templates** make the escrow-and-reveal logic small enough to audit in one sitting. The whole
-  contract is under 250 lines.
+  contract is under 400 lines.
 - **Epochs** give the reveal deadline a consensus-level clock instead of a trusted timestamp.
 
 ## What it guarantees, and what it does not
@@ -61,7 +66,9 @@ Not guaranteed, and deliberately out of scope:
 - **Signal quality.** Verifiability is not profitability. The contract makes a bad provider
   *legible*, not absent.
 - **Reveal liveness.** If the provider vanishes and no buyer keeps the preimage, the commitment
-  stays sealed forever. That is a deliberate trade for not storing the payload on-chain.
+  stays sealed. Buyers then get their money back, but the payload itself is lost.
+- **Selective publishing across keys.** Every publication is an event, but a provider with several
+  keys can still hide the vaults signed by the others.
 
 ## The same primitive elsewhere
 

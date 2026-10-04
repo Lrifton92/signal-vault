@@ -12,7 +12,7 @@ use tari_template_test_tooling::{
 };
 
 const PAYLOAD: &str = "BTCUSDT long 62000 sl 60500 tp 67000";
-const NONCE: &[u8] = b"demo-nonce-01";
+const NONCE: &[u8] = b"demo-nonce-0123456789abcdefghijk";
 const PRICE: u64 = 1_000;
 const REVEAL_AT_EPOCH: u64 = 5;
 
@@ -79,9 +79,12 @@ fn a_stranger_cannot_withdraw_the_proceeds() {
 }
 
 #[test]
-fn the_owner_can_withdraw_the_proceeds() {
+fn the_publisher_can_withdraw_the_proceeds_once_revealed() {
     let (mut test, vault, _) = setup();
     buy(&mut test, vault, PRICE + 1);
+
+    test.set_virtual_substate(VirtualSubstateId::CurrentEpoch, VirtualSubstate::CurrentEpoch(REVEAL_AT_EPOCH));
+    test.call_method::<()>(vault, "reveal", args![PAYLOAD.to_string(), Bytes::from_vec(NONCE.to_vec())], vec![]);
 
     let owner_proof = test.owner_proof();
     let owner_account = test.create_account(test.to_public_key_bytes(), None, vec![owner_proof.clone()]);
