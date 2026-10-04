@@ -23,12 +23,14 @@ tradeable.
    payment resource decides the privacy model: pass a confidential resource and the amounts paid
    stay hidden.
 2. **`purchase(payment) -> (badge, change)`** takes payment into the vault and mints a
-   non-fungible access badge carrying the commitment and the epoch of purchase. The provider
+   non-fungible access badge carrying the commitment and the epoch of purchase (`change` is `None`
+   on an exact payment). Only the vault itself can mint badges. The provider
    delivers the payload off-chain to badge holders. Sales close automatically at the reveal epoch.
 3. **`reveal(payload, nonce)`** is callable by *anyone* once the reveal epoch is reached. The
    template re-hashes and rejects anything that does not open the commitment. A provider who goes
    quiet after a losing call cannot bury it: any buyer holds the preimage and can open it.
-4. **`withdraw(amount)` / `withdraw_confidential(proof)`** pay the provider out.
+4. **`withdraw(amount)` / `withdraw_confidential(proof)`** pay the provider out. Owner only: every
+   other method is public, these two are not.
 
 ## Why the Ootle specifically
 
