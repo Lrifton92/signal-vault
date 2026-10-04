@@ -15,22 +15,28 @@ the signal away for free.
 
 ## What the template does
 
-A provider seals a signal as `blake2b(domain ‖ payload ‖ nonce)` and publishes only that digest,
-together with a price and a reveal epoch. The payload never touches the chain while it is
-tradeable.
+A provider seals a signal as `commitment_of(publisher key, payload, nonce)`: Blake2b-256 over a
+domain tag and those three parts, each length-prefixed. They compute it off-chain and publish only
+the digest, together with a price and a reveal epoch. The payload never touches the chain while it
+is tradeable: never put payload and nonce in a transaction before expiry, that would publish them.
+Because the key is part of the hash, a commitment only opens in a vault signed by the key that
+sealed it: copying a competitor's commitment into your own vault gets you a signal you can never
+open.
 
-1. **`publish(commitment, reveal_at_epoch, price, payment_resource)`** creates the component. The
+1. **`publish(commitment, reveal_at_epoch, price, payment_resource)`** creates the component.
+   Payment must be TARI: the engine lets the issuer of any other resource recall or freeze it in any
+   vault, which would let a provider pricing in their own coin take the escrow back. The
    component has no owner, so nobody, the publisher included, can change its code or its rules
    afterwards. `reveal_at_epoch` must be at most 10,000 epochs away, and the publication is
    emitted as a `signal_published` event, so a provider's unopened vaults stay visible.
 2. **`purchase(payment) -> (badge, change)`** takes payment into the vault and mints a
    non-fungible access badge carrying the commitment and the epoch of purchase (`change` is `None`
-   on an exact payment). Only the vault itself can mint badges, and badge data is immutable. Payment
-   must be revealed funds: hidden confidential commitments are refused rather than lost. The provider
+   on an exact payment). Only the vault itself can mint badges, and badge data is immutable. The provider
    delivers the payload off-chain to badge holders. Sales close automatically at the reveal epoch.
 3. **`reveal(payload, nonce)`** is callable by *anyone* during the reveal window (10 epochs from
    the reveal epoch). The template re-hashes, rejects anything that does not open the commitment,
-   and requires a 16 to 64-byte nonce (use 32 random bytes: a short one lets anyone brute-force a
+   refuses payloads with control, bidi or zero-width characters (a payload must read the way it
+   hashes), and requires a 16 to 64-byte nonce (use 32 random bytes: a short one lets anyone brute-force a
    guessable payload from the public digest).
 4. **`refund(badges)`**: if the window closes without a reveal, any badge holder burns their badges
    and gets the price back. An unopened signal is a refunded loss, never a quiet one.
@@ -39,10 +45,9 @@ tradeable.
 
 ## Why the Ootle specifically
 
-- **Confidential resources** keep the buyer's wallet private: they pay the exact price out of a
-  confidential withdraw, so their balance never shows. The price and the number of badges sold are
-  public, so gross revenue is too (`price × sold`); what the provider does with it can go back into
-  a confidential output.
+- **Native TARI is a stealth resource**: what a buyer holds and where the provider sends the
+  proceeds can stay private. The price and the number of badges sold are public, so gross revenue is
+  too (`price × sold`).
 - **Templates** make the escrow-and-reveal logic small enough to audit in one sitting. The whole
   contract is under 400 lines.
 - **Epochs** give the reveal deadline a consensus-level clock instead of a trusted timestamp.
@@ -79,7 +84,8 @@ pre-commitments, sealed-bid auctions, bug-bounty disclosure windows.
 
 ```
 rustup target add wasm32-unknown-unknown
-cargo test                                        # commitment scheme, native
+cargo test --lib                                  # commitment scheme, native
+cargo test --tests                                # engine scenarios, Linux/macOS only
 cargo build --release --target wasm32-unknown-unknown
 ```
 
@@ -92,7 +98,8 @@ by the pure-Rust `blake2` crate rather than by an engine intrinsic, for the same
 
 ## Deployed
 
-Live on the **esmeralda** testnet:
+The September contest version is live on the **esmeralda** testnet. It predates both audit passes
+and has none of their fixes (no refunds, owner-controlled vault): do not use it for real value.
 
 ```
 template_06b9882e4d8e26551752ef0b1c5d300ec0b9a6db8a85705e34934f6dc858a61d
@@ -110,7 +117,8 @@ template name `SignalVault`.
 here, and why it was right:
 
 - `crate-type` is exactly `["cdylib"]`. Dropping `rlib` took the binary from 245 KB to 182 KB. The
-  tests moved from `tests/` into a `#[cfg(test)]` module in the crate, which needs no `rlib`.
+  integration tests therefore keep their own copy of `commitment_of` (`tests/common`), and every
+  successful reveal checks it against the template's.
 - Every `Vec<u8>` crossing the template boundary is now `Bytes` from `tari_template_lib::prelude`.
   A `Vec<u8>` CBOR-encodes as an array of integers rather than a byte string, up to twice the size.
 - `build.rs` and `tari_ootle_template_build` generate the on-chain template metadata, and

@@ -1,16 +1,15 @@
-//! Paying with a confidential resource. The template only sees the revealed part of a bucket, so
-//! hidden commitments would be deposited uncounted and stuck in the vault: nobody but the buyer knows
-//! their masks, and only the publisher may withdraw. Purchases must refuse them.
+//! Payment resources other than TARI. A confidential resource used to let hidden commitments be
+//! deposited uncounted and stuck; any issued resource lets its issuer recall or freeze the escrow
+//! (see `audit_second_wave.rs`). Both are now refused at publish.
 //!
 //! Linux/macOS only, like `end_to_end.rs`.
 
-use tari_template_lib_types::{bytes::Bytes, Amount, ComponentAddress, Hash32, ResourceAddress};
+mod common;
+
+use tari_template_lib_types::{Amount, ComponentAddress, ResourceAddress};
 use tari_template_test_tooling::{
     engine_types::virtual_substate::{VirtualSubstate, VirtualSubstateId},
-    support::{
-        confidential::{generate_confidential_output_statement, generate_reveal_proof, generate_withdraw_proof},
-        value_proof::value_proofs_for_commitment,
-    },
+    support::{confidential::generate_confidential_output_statement, value_proof::value_proofs_for_commitment},
     transaction::args,
     TemplateTest,
 };
@@ -21,8 +20,8 @@ const PRICE: u64 = 1_000;
 const SUPPLY: u64 = 10_000;
 const REVEAL_AT_EPOCH: u64 = 5;
 
-/// A faucet holding `SUPPLY` in one hidden commitment, and a vault priced in that resource.
-fn setup() -> (TemplateTest, ComponentAddress, ComponentAddress, tari_template_test_tooling::crypto::RistrettoSecretKey) {
+#[test]
+fn a_confidential_payment_resource_is_refused() {
     let mut test = TemplateTest::new_cwd([".", "tests/confidential_faucet"]);
     test.set_virtual_substate(VirtualSubstateId::CurrentEpoch, VirtualSubstate::CurrentEpoch(1));
 
@@ -35,61 +34,12 @@ fn setup() -> (TemplateTest, ComponentAddress, ComponentAddress, tari_template_t
     );
     let resource: ResourceAddress = test.call_method(faucet, "resource", args![], vec![]);
 
-    let commitment: Hash32 = test.call_function(
-        "SignalVault",
-        "digest_of",
-        args![PAYLOAD.to_string(), Bytes::from_vec(NONCE.to_vec())],
-        vec![],
-    );
-    let vault: ComponentAddress = test.call_function(
-        "SignalVault",
-        "publish",
-        args![commitment, REVEAL_AT_EPOCH, Amount::from_u64(PRICE), resource],
-        vec![],
-    );
-    (test, faucet, vault, mask)
-}
-
-#[test]
-fn a_payment_with_hidden_commitments_is_refused() {
-    let (mut test, faucet, vault, mask) = setup();
-    let (buyer, proof, key) = test.create_funded_account();
-
-    // The price revealed, plus 500 hidden in a commitment: before the fix the 500 was swallowed.
-    let withdraw = generate_withdraw_proof(&mask, 500, Some(SUPPLY - 500 - PRICE), PRICE);
+    let commitment = common::digest(&test, PAYLOAD, NONCE);
+    let template = test.get_template_address("SignalVault");
     let tx = test
         .transaction()
-        .call_method(faucet, "take", args![withdraw.proof])
-        .put_last_instruction_output_on_workspace("payment")
-        .call_method(vault, "purchase", args![Workspace("payment")])
-        .put_last_instruction_output_on_workspace("out")
-        .call_method(buyer, "deposit", args![Workspace("out.0")])
-        .build_and_seal(&key);
-    let reason = format!("{:?}", test.execute_expect_failure(tx, vec![proof]));
-    assert!(reason.contains("confidential commitments"), "rejected for the wrong reason: {reason}");
-    assert_eq!(test.call_method::<u64>(vault, "sold", args![], vec![]), 0);
-}
-
-#[test]
-fn a_fully_revealed_confidential_payment_is_accepted() {
-    let (mut test, faucet, vault, mask) = setup();
-    let (buyer, proof, key) = test.create_funded_account();
-
-    // Everything revealed: the price goes to the vault and the rest comes back as change.
-    let tx = test
-        .transaction()
-        .call_method(faucet, "take", args![generate_reveal_proof(&mask, SUPPLY)])
-        .put_last_instruction_output_on_workspace("payment")
-        .call_method(vault, "purchase", args![Workspace("payment")])
-        .put_last_instruction_output_on_workspace("out")
-        .call_method(buyer, "deposit", args![Workspace("out.0")])
-        .call_method(buyer, "deposit", args![Workspace("out.1")])
-        .build_and_seal(&key);
-    test.execute_expect_success(tx, vec![proof]);
-
-    assert_eq!(test.call_method::<u64>(vault, "sold", args![], vec![]), 1);
-    assert_eq!(
-        test.call_method::<Amount>(vault, "earnings_balance", args![], vec![]),
-        Amount::from_u64(PRICE)
-    );
+        .call_function(template, "publish", args![commitment, REVEAL_AT_EPOCH, Amount::from_u64(PRICE), resource])
+        .build_and_seal(test.secret_key());
+    let reason = format!("{:?}", test.execute_expect_failure(tx, vec![]));
+    assert!(reason.contains("payment must be in TARI"), "rejected for the wrong reason: {reason}");
 }

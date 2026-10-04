@@ -5,7 +5,7 @@
 //!
 //! A sealed-bid marketplace primitive for the Tari Ootle: **pay to unlock, verify after expiry**.
 //!
-//! A signal provider publishes only `commitment_of(payload, nonce)` — the signal itself never touches
+//! A signal provider publishes only `commitment_of(publisher, payload, nonce)` — the signal itself never touches
 //! the chain while it is tradeable. Buyers pay into a vault and receive an access badge; the
 //! provider delivers the payload off-chain to badge holders. Once the reveal epoch is reached,
 //! anybody may open the commitment, and from then on the payload is public and permanently bound
@@ -20,10 +20,11 @@
 //! * a provider is only paid for a signal they open: proceeds stay locked until the reveal, and if
 //!   the reveal window closes without one, every badge holder can burn their badge for a refund.
 //!
-//! What stays private: the payload until expiry, and — when the payment resource is confidential —
-//! the buyer's own balance (they reveal exactly the price from a confidential withdraw) and where
-//! the provider sends the proceeds. What does not: the price and the number of badges sold are
-//! public, so gross revenue is `price × sold`.
+//! Payment is in TARI only. The engine lets a resource's issuer recall or freeze it in any vault,
+//! so a coin the provider issued would let them take the escrow back before revealing.
+//!
+//! What stays private: the payload until expiry. What does not: the price and the number of
+//! badges sold are public, so gross revenue is `price × sold`.
 //!
 //! The same primitive fits any "sell information now, prove it later" market: research calls,
 //! oracle pre-commitments, sealed-bid auctions.
@@ -35,7 +36,7 @@ use tari_template_lib::types::Hash32;
 
 /// Domain separator, so a digest produced here can never be mistaken for one produced by another
 /// protocol that happens to hash the same bytes.
-const DOMAIN: &[u8] = b"tari.ootle.signal_vault.commitment.v1";
+const DOMAIN: &[u8] = b"tari.ootle.signal_vault.commitment.v2";
 
 type Blake2b256 = Blake2b<U32>;
 
@@ -60,17 +61,28 @@ pub const MAX_PAYLOAD_LEN: usize = 1024;
 /// different digests. Without that, a provider could open one commitment with two different
 /// payload/nonce splits and pick whichever one aged better.
 ///
-/// Kept outside the template module so it is an ordinary Rust function: callers can compute the
-/// commitment off-chain before publishing, and it can be tested natively without an engine.
-pub fn commitment_of(payload: &str, nonce: &[u8]) -> Hash32 {
+/// The publisher's public key is part of the hash, so a commitment only opens in a vault published
+/// by the key that sealed it: copying a competitor's commitment into your own vault gets you a
+/// signal you can never open.
+///
+/// Compute it off-chain, never in a transaction: payload and nonce in a transaction are public. It
+/// is an ordinary Rust function, outside the template, so it can be tested natively.
+pub fn commitment_of(publisher: &[u8], payload: &str, nonce: &[u8]) -> Hash32 {
     let mut hasher = Blake2b256::new();
-    hasher.update((DOMAIN.len() as u64).to_le_bytes());
-    hasher.update(DOMAIN);
-    hasher.update((payload.len() as u64).to_le_bytes());
-    hasher.update(payload.as_bytes());
-    hasher.update((nonce.len() as u64).to_le_bytes());
-    hasher.update(nonce);
+    for part in [DOMAIN, publisher, payload.as_bytes(), nonce] {
+        hasher.update((part.len() as u64).to_le_bytes());
+        hasher.update(part);
+    }
     Hash32::from_array(hasher.finalize().into())
+}
+
+/// Whether a payload reads the way it hashes. Control characters, bidi overrides and zero-width
+/// characters let a provider show one call and hold another, then pick after the fact.
+pub fn payload_is_canonical(payload: &str) -> bool {
+    !payload.chars().any(|c| {
+        c.is_control() ||
+            matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2069}' | '\u{FEFF}')
+    })
 }
 
 /// Data carried by an access badge. Kept deliberately small: everything a buyer needs to prove
@@ -119,11 +131,10 @@ mod signal_vault {
     impl SignalVault {
         /// Seals a signal.
         ///
-        /// `commitment` must be `commitment_of(payload, nonce)` — the template checks that on reveal,
-        /// so a provider who commits to nothing simply can never reveal.
+        /// `commitment` must be `commitment_of(signer's public key, payload, nonce)` — the template
+        /// checks that on reveal, so a provider who commits to nothing simply can never reveal.
         ///
-        /// `payment_resource` chooses the privacy model: pass a confidential resource and the
-        /// amounts paid stay hidden; pass a public one and they do not.
+        /// `payment_resource` must be TARI.
         pub fn publish(
             commitment: Hash32,
             reveal_at_epoch: u64,
@@ -144,11 +155,9 @@ mod signal_vault {
                 MAX_REVEAL_HORIZON_EPOCHS
             );
             assert!(price.is_positive(), "price must be positive");
-            // A non-fungible "price" would be paid in arbitrary tokens and refunded in others.
-            assert!(
-                ResourceManager::get(payment_resource).resource_type() != ResourceType::NonFungible,
-                "the payment resource cannot be non-fungible"
-            );
+            // Any other resource has an issuer, and the engine lets an issuer recall or freeze it
+            // in any vault: the escrow would only be as good as the issuer's goodwill.
+            assert!(payment_resource == TARI_TOKEN, "payment must be in TARI");
 
             // The vault's address is reserved up front so the badge resource can name it: only code
             // running inside this component (`purchase` and `refund`) may mint or burn a badge.
@@ -269,6 +278,7 @@ mod signal_vault {
             );
             assert!(self.payload.is_none(), "already revealed");
             assert!(payload.len() <= MAX_PAYLOAD_LEN, "payload longer than {} bytes", MAX_PAYLOAD_LEN);
+            assert!(payload_is_canonical(&payload), "payload contains control or bidi characters");
             assert!(
                 (MIN_NONCE_LEN..=MAX_NONCE_LEN).contains(&nonce.len()),
                 "nonce must be {} to {} bytes",
@@ -276,7 +286,7 @@ mod signal_vault {
                 MAX_NONCE_LEN
             );
             assert!(
-                commitment_of(&payload, &nonce) == self.commitment,
+                commitment_of(self.publisher.as_bytes(), &payload, &nonce) == self.commitment,
                 "payload and nonce do not open this commitment"
             );
 
@@ -378,13 +388,6 @@ mod signal_vault {
         pub fn earnings_balance(&self) -> Amount {
             self.earnings.balance()
         }
-
-        /// Re-derives the commitment. Exposed so a buyer can check, off-chain and before paying,
-        /// that the payload they were promised is the one that was sealed.
-        pub fn digest_of(payload: String, nonce: Bytes) -> Hash32 {
-            commitment_of(&payload, &nonce)
-        }
-
     }
 }
 
@@ -394,26 +397,28 @@ mod tests {
     //! matters: if two different payloads can open the same commitment, the whole "you cannot fake a
     //! track record" claim collapses. These run natively, no engine needed.
 
-    use super::commitment_of;
+    use super::{commitment_of, payload_is_canonical};
+
+    const KEY: &[u8] = &[7u8; 32];
 
     #[test]
     fn same_input_gives_same_commitment() {
-        let a = commitment_of("BTCUSDT long 62000 sl 60500", b"nonce-1");
-        let b = commitment_of("BTCUSDT long 62000 sl 60500", b"nonce-1");
+        let a = commitment_of(KEY, "BTCUSDT long 62000 sl 60500", b"nonce-1");
+        let b = commitment_of(KEY, "BTCUSDT long 62000 sl 60500", b"nonce-1");
         assert_eq!(a, b, "the digest must be deterministic");
     }
 
     #[test]
     fn a_different_payload_gives_a_different_commitment() {
-        let a = commitment_of("BTCUSDT long 62000 sl 60500", b"nonce-1");
-        let b = commitment_of("BTCUSDT short 62000 sl 63500", b"nonce-1");
+        let a = commitment_of(KEY, "BTCUSDT long 62000 sl 60500", b"nonce-1");
+        let b = commitment_of(KEY, "BTCUSDT short 62000 sl 63500", b"nonce-1");
         assert_ne!(a, b);
     }
 
     #[test]
     fn a_different_nonce_gives_a_different_commitment() {
-        let a = commitment_of("BTCUSDT long 62000 sl 60500", b"nonce-1");
-        let b = commitment_of("BTCUSDT long 62000 sl 60500", b"nonce-2");
+        let a = commitment_of(KEY, "BTCUSDT long 62000 sl 60500", b"nonce-1");
+        let b = commitment_of(KEY, "BTCUSDT long 62000 sl 60500", b"nonce-2");
         assert_ne!(
             a, b,
             "the nonce is what stops a guessable payload from being brute-forced before reveal"
@@ -421,19 +426,26 @@ mod tests {
     }
 
     #[test]
-    fn shifting_bytes_between_payload_and_nonce_does_not_collide() {
-        // The attack the length prefix exists to stop: without it, hashing payload||nonce would let a
-        // provider open one commitment two ways and claim whichever call turned out right.
-        let a = commitment_of("ab", b"c");
-        let b = commitment_of("a", b"bc");
+    fn a_different_publisher_gives_a_different_commitment() {
+        // What stops a copier from reselling someone else's sealed signal.
+        let a = commitment_of(KEY, "BTCUSDT long 62000 sl 60500", b"nonce-1");
+        let b = commitment_of(&[8u8; 32], "BTCUSDT long 62000 sl 60500", b"nonce-1");
         assert_ne!(a, b);
     }
 
     #[test]
+    fn shifting_bytes_between_parts_does_not_collide() {
+        // The attack the length prefix exists to stop: without it, hashing payload||nonce would let a
+        // provider open one commitment two ways and claim whichever call turned out right.
+        assert_ne!(commitment_of(KEY, "ab", b"c"), commitment_of(KEY, "a", b"bc"));
+        assert_ne!(commitment_of(b"k", "ab", b""), commitment_of(b"ka", "b", b""));
+    }
+
+    #[test]
     fn empty_payload_and_empty_nonce_are_distinguished() {
-        let a = commitment_of("", b"");
-        let b = commitment_of("", b"\x00");
-        let c = commitment_of("\u{0}", b"");
+        let a = commitment_of(KEY, "", b"");
+        let b = commitment_of(KEY, "", b"\x00");
+        let c = commitment_of(KEY, "\u{0}", b"");
         assert_ne!(a, b);
         assert_ne!(a, c);
         assert_ne!(b, c);
@@ -441,6 +453,15 @@ mod tests {
 
     #[test]
     fn commitment_is_32_bytes() {
-        assert_eq!(commitment_of("x", b"y").as_slice().len(), 32);
+        assert_eq!(commitment_of(KEY, "x", b"y").as_slice().len(), 32);
+    }
+
+    #[test]
+    fn payloads_that_read_differently_than_they_hash_are_not_canonical() {
+        assert!(payload_is_canonical("BTCUSDT long 62000 sl 60500 — entrée à 62k"));
+        assert!(!payload_is_canonical("BTC \u{202E}trohs"));
+        assert!(!payload_is_canonical("BTC long\0short"));
+        assert!(!payload_is_canonical("BTC long\u{200B}"));
+        assert!(!payload_is_canonical("BTC long\nshort"));
     }
 }

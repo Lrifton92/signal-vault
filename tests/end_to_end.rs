@@ -8,6 +8,8 @@
 //! Linux/macOS only: `tari_template_test_tooling` pulls the engine, which pulls a Cranelift JIT
 //! that refuses to compile on Windows (tari-project/tari-cli#205). CI runs it.
 
+mod common;
+
 use tari_template_lib_types::{bytes::Bytes, constants::TARI_TOKEN, Amount, ComponentAddress, Hash32};
 use tari_template_test_tooling::{
     engine_types::virtual_substate::{VirtualSubstate, VirtualSubstateId},
@@ -34,14 +36,9 @@ fn a_sealed_signal_is_sold_then_opened_only_at_expiry_and_only_as_committed() {
     let mut test = TemplateTest::new_cwd(["."]);
     set_epoch(&mut test, 1);
 
-    // The digest comes from the template's own `digest_of`, so the test commits to exactly what the
-    // template will re-hash on reveal. Recomputing it here would only test the test.
-    let commitment: Hash32 = test.call_function(
-        "SignalVault",
-        "digest_of",
-        args![PAYLOAD.to_string(), Bytes::from_vec(NONCE.to_vec())],
-        vec![],
-    );
+    // Computed off-chain, as a provider must. The reveal below fails if this copy of the scheme ever
+    // drifts from the template's.
+    let commitment: Hash32 = common::digest(&test, PAYLOAD, NONCE);
 
     let vault: ComponentAddress = test.call_function(
         "SignalVault",
