@@ -7,7 +7,10 @@
 use tari_template_lib_types::{bytes::Bytes, Amount, ComponentAddress, Hash32, ResourceAddress};
 use tari_template_test_tooling::{
     engine_types::virtual_substate::{VirtualSubstate, VirtualSubstateId},
-    support::confidential::{generate_confidential_output_statement, generate_reveal_proof, generate_withdraw_proof},
+    support::{
+        confidential::{generate_confidential_output_statement, generate_reveal_proof, generate_withdraw_proof},
+        value_proof::value_proofs_for_commitment,
+    },
     transaction::args,
     TemplateTest,
 };
@@ -24,7 +27,12 @@ fn setup() -> (TemplateTest, ComponentAddress, ComponentAddress, tari_template_t
     test.set_virtual_substate(VirtualSubstateId::CurrentEpoch, VirtualSubstate::CurrentEpoch(1));
 
     let (supply, mask, _) = generate_confidential_output_statement(SUPPLY, None);
-    let faucet: ComponentAddress = test.call_function("ConfidentialFaucet", "mint", args![supply], vec![]);
+    let faucet: ComponentAddress = test.call_function(
+        "ConfidentialFaucet",
+        "mint",
+        args![supply, value_proofs_for_commitment(SUPPLY, &mask)],
+        vec![],
+    );
     let resource: ResourceAddress = test.call_method(faucet, "resource", args![], vec![]);
 
     let commitment: Hash32 = test.call_function(

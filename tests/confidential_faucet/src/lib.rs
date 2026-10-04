@@ -1,6 +1,8 @@
 //! Test-only template: mints a confidential resource and pays out of it, so tests can hand Signal
 //! Vault a bucket with hidden commitments in it.
 
+use std::collections::BTreeMap;
+
 use tari_template_lib::prelude::*;
 
 #[template]
@@ -12,10 +14,13 @@ mod confidential_faucet {
     }
 
     impl ConfidentialFaucet {
-        pub fn mint(supply: ConfidentialOutputStatement) -> Component<Self> {
+        pub fn mint(
+            supply: ConfidentialOutputStatement,
+            value_proofs: BTreeMap<PedersenCommitmentBytes, crypto::CommitmentValueProof>,
+        ) -> Component<Self> {
             let coins = ResourceBuilder::confidential()
                 .mintable(rule!(allow_all), OWNER)
-                .initial_supply(supply);
+                .initial_supply_with_value_proofs(supply, value_proofs);
             Component::new(Self { vault: Vault::from_bucket(coins) })
                 .with_access_rules(ComponentAccessRules::new().default(rule!(allow_all)))
                 .create()
