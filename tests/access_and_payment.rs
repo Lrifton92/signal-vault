@@ -40,20 +40,21 @@ fn setup() -> (TemplateTest, ComponentAddress, ResourceAddress) {
     (test, vault, badges)
 }
 
-/// One buyer pays `amount` and deposits both returned buckets. Panics, with the engine's reason,
-/// if the transaction is rejected.
+/// One buyer pays `amount` and deposits the badge, plus the change when there is some. Panics,
+/// with the engine's reason, if the transaction is rejected.
 fn buy(test: &mut TemplateTest, vault: ComponentAddress, amount: u64) {
     let (buyer, proof, key) = test.create_funded_account();
-    let tx = test
+    let mut builder = test
         .transaction()
         .call_method(buyer, "withdraw", args![TARI_TOKEN, Amount::from_u64(amount)])
         .put_last_instruction_output_on_workspace("payment")
         .call_method(vault, "purchase", args![Workspace("payment")])
         .put_last_instruction_output_on_workspace("out")
-        .call_method(buyer, "deposit", args![Workspace("out.0")])
-        .call_method(buyer, "deposit", args![Workspace("out.1")])
-        .build_and_seal(&key);
-    test.execute_expect_success(tx, vec![proof]);
+        .call_method(buyer, "deposit", args![Workspace("out.0")]);
+    if amount > PRICE {
+        builder = builder.call_method(buyer, "deposit", args![Workspace("out.1")]);
+    }
+    test.execute_expect_success(builder.build_and_seal(&key), vec![proof]);
 }
 
 #[test]

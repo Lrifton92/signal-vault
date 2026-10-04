@@ -112,10 +112,15 @@ mod signal_vault {
             );
             assert!(price.is_positive(), "price must be positive");
 
+            // The vault's address is reserved up front so the badge resource can name it: only code
+            // running inside this component (that is, `purchase`) may mint a badge.
+            let allocation = CallerContext::allocate_component_address(None);
+            let vault_address = allocation.get_address();
+
             let badges = ResourceBuilder::non_fungible()
                 .with_token_symbol("SIGV")
                 .add_metadata("name", "Signal Vault access badge")
-                .mintable(rule!(allow_all), OWNER)
+                .mintable(rule!(component(vault_address)), OWNER)
                 .burnable(rule!(allow_all), OWNER)
                 .build();
 
@@ -130,15 +135,32 @@ mod signal_vault {
                 revealed_at_epoch: None,
                 sold: 0,
             })
-            .with_access_rules(AccessRules::allow_all())
+            .with_address_allocation(allocation)
+            // Everything is public except `withdraw` and `withdraw_confidential`, which fall through to
+            // the default and are therefore callable only by the component owner (the publisher).
+            .with_access_rules(
+                ComponentAccessRules::new()
+                    .method("purchase", rule!(allow_all))
+                    .method("reveal", rule!(allow_all))
+                    .method("commitment", rule!(allow_all))
+                    .method("reveal_at_epoch", rule!(allow_all))
+                    .method("price", rule!(allow_all))
+                    .method("sold", rule!(allow_all))
+                    .method("payload", rule!(allow_all))
+                    .method("nonce", rule!(allow_all))
+                    .method("revealed_at_epoch", rule!(allow_all))
+                    .method("earnings_balance", rule!(allow_all))
+                    .default(rule!(deny_all)),
+            )
             .create()
         }
 
         /// Buys one access badge.
         ///
-        /// Returns the badge, plus any change. Selling stops at the reveal epoch: past that point
-        /// the payload is public, so charging for it would be selling nothing.
-        pub fn purchase(&mut self, mut payment: Bucket) -> (Bucket, Bucket) {
+        /// Returns the badge, plus the change when more than the price was paid (`None` on an exact
+        /// payment: the engine does not allow an empty bucket). Selling stops at the reveal epoch:
+        /// past that point the payload is public, so charging for it would be selling nothing.
+        pub fn purchase(&mut self, mut payment: Bucket) -> (Bucket, Option<Bucket>) {
             assert!(self.payload.is_none(), "signal already revealed; nothing left to sell");
             assert!(
                 Consensus::current_epoch() < self.reveal_at_epoch,
@@ -152,7 +174,7 @@ mod signal_vault {
             let paid = payment.amount();
             assert!(paid >= self.price, "paid {} but the price is {}", paid, self.price);
 
-            let change = payment.take(paid - self.price);
+            let change = (paid > self.price).then(|| payment.take(paid - self.price));
             self.earnings.deposit(payment);
 
             let badge = self.badges.mint_non_fungible(
@@ -194,8 +216,8 @@ mod signal_vault {
             self.revealed_at_epoch = Some(now);
         }
 
-        /// Withdraws proceeds. Restricted to the component owner by the access rules set at
-        /// publish time on the calling account.
+        /// Withdraws proceeds. Owner only: no access rule allows it, so only the component owner
+        /// (the publisher) passes the engine's check.
         pub fn withdraw(&mut self, amount: Amount) -> Bucket {
             self.earnings.withdraw(amount)
         }
