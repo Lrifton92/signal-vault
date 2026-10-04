@@ -1,0 +1,15 @@
+# Test-only template: a third party that tries to mint Signal Vault badges without paying.
+# Its own workspace root so cargo does not treat it as a member of the signal_vault package.
+[workspace]
+
+[package]
+name = "badge_forger"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+tari_template_lib = "0.31.1"
+
+[lib]
+crate-type = ["cdylib"]
