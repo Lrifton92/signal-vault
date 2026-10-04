@@ -144,12 +144,10 @@ mod signal_vault {
                 MAX_REVEAL_HORIZON_EPOCHS
             );
             assert!(price.is_positive(), "price must be positive");
+            // A non-fungible "price" would be paid in arbitrary tokens and refunded in others.
             assert!(
-                matches!(
-                    ResourceManager::get(payment_resource).resource_type(),
-                    ResourceType::Fungible | ResourceType::Confidential
-                ),
-                "the payment resource must be fungible or confidential"
+                ResourceManager::get(payment_resource).resource_type() != ResourceType::NonFungible,
+                "the payment resource cannot be non-fungible"
             );
 
             // The vault's address is reserved up front so the badge resource can name it: only code
