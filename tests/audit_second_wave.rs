@@ -4,6 +4,8 @@
 //!
 //! Linux/macOS only, like `end_to_end.rs`.
 
+mod common;
+
 use tari_template_lib_types::{
     bytes::Bytes,
     constants::TARI_TOKEN,
@@ -38,12 +40,7 @@ fn new_test() -> TemplateTest {
 }
 
 fn digest(test: &mut TemplateTest, payload: &str, nonce: &[u8]) -> Hash32 {
-    test.call_function(
-        "SignalVault",
-        "digest_of",
-        args![payload.to_string(), Bytes::from_vec(nonce.to_vec())],
-        vec![],
-    )
+    common::digest(test, payload, nonce)
 }
 
 /// Publishes a vault, signed by `key`, and returns its address, badge resource and earnings vault.
@@ -111,38 +108,20 @@ fn refund_tx(test: &mut TemplateTest, vault: ComponentAddress, badges: ResourceA
 }
 
 #[test]
-fn the_payment_issuer_cannot_empty_the_escrow_before_the_reveal() {
+fn a_recallable_payment_coin_is_refused() {
     // The engine checks a recall against the resource's rules only, never against who owns the
-    // vault. A publisher who prices the signal in a coin they can recall takes the escrow back.
+    // vault: a publisher who priced the signal in a coin they can recall took the escrow back before
+    // revealing (CI run 37245086143 on the previous commit). Only TARI is accepted now.
     let mut test = new_test();
-    let publisher_proof = test.owner_proof();
-    let publisher_account = test.create_account(test.to_public_key_bytes(), None, vec![publisher_proof.clone()]);
     let coin: ComponentAddress = test.call_function("RugCoin", "issue", args![Amount::from_u64(SUPPLY)], vec![]);
     let rug: ResourceAddress = test.call_method(coin, "resource", args![], vec![]);
-
     let commitment = digest(&mut test, PAYLOAD, NONCE);
-    let key = test.secret_key().clone();
-    let (vault, _, earnings) = publish_as(&mut test, &key, vec![], commitment, rug);
-
-    let (buyer, buyer_proof, buyer_key) = test.create_funded_account();
+    let template = test.get_template_address("SignalVault");
     let tx = test
         .transaction()
-        .call_method(coin, "take", args![Amount::from_u64(PRICE)])
-        .put_last_instruction_output_on_workspace("payment")
-        .call_method(vault, "purchase", args![Workspace("payment")])
-        .put_last_instruction_output_on_workspace("out")
-        .call_method(buyer, "deposit", args![Workspace("out.0")])
-        .build_and_seal(&buyer_key);
-    test.execute_expect_success(tx, vec![buyer_proof]);
-
-    let rug_coin = test.get_template_address("RugCoin");
-    let tx = test
-        .transaction()
-        .call_function(rug_coin, "recall", args![rug, earnings, Amount::from_u64(PRICE)])
-        .put_last_instruction_output_on_workspace("loot")
-        .call_method(publisher_account, "deposit", args![Workspace("loot")])
+        .call_function(template, "publish", args![commitment, REVEAL_AT_EPOCH, Amount::from_u64(PRICE), rug])
         .build_and_seal(test.secret_key());
-    test.execute_expect_failure(tx, vec![publisher_proof]);
+    expect_reject(&mut test, tx, vec![], "payment must be in TARI");
 }
 
 #[test]

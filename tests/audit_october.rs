@@ -4,6 +4,8 @@
 //!
 //! Linux/macOS only, like `end_to_end.rs`.
 
+mod common;
+
 use tari_template_lib_types::{bytes::Bytes, constants::TARI_TOKEN, Amount, ComponentAddress, Hash32, NonFungibleAddress, ResourceAddress};
 use tari_template_test_tooling::{
     engine_types::virtual_substate::{VirtualSubstate, VirtualSubstateId},
@@ -22,12 +24,7 @@ fn set_epoch(test: &mut TemplateTest, epoch: u64) {
 }
 
 fn digest(test: &mut TemplateTest, payload: &str, nonce: &[u8]) -> Hash32 {
-    test.call_function(
-        "SignalVault",
-        "digest_of",
-        args![payload.to_string(), Bytes::from_vec(nonce.to_vec())],
-        vec![],
-    )
+    common::digest(test, payload, nonce)
 }
 
 /// Publishes a vault signed by the test's default key (the publisher).

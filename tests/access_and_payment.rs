@@ -4,6 +4,8 @@
 //! Linux/macOS only, like `end_to_end.rs`: the engine pulls a Cranelift JIT that does not build on
 //! Windows.
 
+mod common;
+
 use tari_template_lib_types::{bytes::Bytes, constants::TARI_TOKEN, Amount, ComponentAddress, Hash32, ResourceAddress};
 use tari_template_test_tooling::{
     engine_types::virtual_substate::{VirtualSubstate, VirtualSubstateId},
@@ -16,17 +18,12 @@ const NONCE: &[u8] = b"demo-nonce-0123456789abcdefghijk";
 const PRICE: u64 = 1_000;
 const REVEAL_AT_EPOCH: u64 = 5;
 
-/// Publishes a vault signed by the test's default key, which makes that key the component owner.
+/// Publishes a vault signed by the test's default key, the publisher (the vault itself has no owner).
 fn setup() -> (TemplateTest, ComponentAddress, ResourceAddress) {
     let mut test = TemplateTest::new_cwd([".", "tests/badge_forger"]);
     test.set_virtual_substate(VirtualSubstateId::CurrentEpoch, VirtualSubstate::CurrentEpoch(1));
 
-    let commitment: Hash32 = test.call_function(
-        "SignalVault",
-        "digest_of",
-        args![PAYLOAD.to_string(), Bytes::from_vec(NONCE.to_vec())],
-        vec![],
-    );
+    let commitment: Hash32 = common::digest(&test, PAYLOAD, NONCE);
     let template = test.get_template_address("SignalVault");
     let result = test.execute_expect_success(
         test.transaction()
